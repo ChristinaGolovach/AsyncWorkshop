@@ -3,7 +3,7 @@ using System.Threading.Tasks;
 
 namespace SiteCopy.Services
 {
-    internal interface IDataStorage
+    public interface IDataStorage
     {
         void SaveHtml(string dataSource, string htmTitle);
 

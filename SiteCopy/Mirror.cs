@@ -2,13 +2,13 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
-using System.IO;
 using System.Threading.Tasks;
-using System.Text.RegularExpressions;
 using SiteCopy.LinkRestrictions;
 using SiteCopy.LinkRestrictions.Interfaces;
 using SiteCopy.Utils;
 using AngleSharp.Html.Dom;
+using SiteCopy.Services.Factories;
+using SiteCopy.Services;
 
 namespace SiteCopy
 {
@@ -16,6 +16,7 @@ namespace SiteCopy
     public class Mirror
     {
         private ILinkRestriction linkRestrictor;
+        private IDataStorage dataStorage;
 
         private HtmlParserUtil htmlParser;
 
@@ -25,32 +26,27 @@ namespace SiteCopy
             htmlParser = new HtmlParserUtil();
         }
 
-        public async Task GetSiteCopy(string uri, string savePath, int depthCopy = 0, PathLinkRestriction linkRestriction = PathLinkRestriction.NoLimit, string allowedResources="")
+        public async Task GetSiteCopy(string uri, IStorageFactory storageFactory, int depthCopy = 0, PathLinkRestriction linkRestriction = PathLinkRestriction.NoLimit, string allowedResources="")
         {
             if (string.IsNullOrEmpty(uri))
             {
                 throw new ArgumentNullException($"The {nameof(uri)} can not be null or empty.");
-            }
-
-            if (string.IsNullOrEmpty(savePath))
-            {
-                throw new ArgumentNullException($"The {nameof(savePath)} can not be null or empty.");
-            }
+            } 
 
             if (depthCopy < 0)
             {
                 throw new ArgumentOutOfRangeException($"The {nameof(depthCopy)} can not be negative.");
             }
 
-            if (string.IsNullOrEmpty(allowedResources))
+            if (allowedResources == null)
             {
-                throw new ArgumentNullException($"The {nameof(allowedResources)} can not be null or empty.");
+                throw new ArgumentNullException($"The {nameof(allowedResources)} can not be null.");
             }
 
-            if (!Directory.Exists(savePath))
+            if (storageFactory == null)
             {
-                throw new ArgumentException($"The wrong path {savePath}.");
-            }
+                throw new ArgumentNullException($"The {nameof(storageFactory)} can not be null.");
+            } 
 
             if (!LinkRestrictionCollection.Restrictions.TryGetValue(linkRestriction, out linkRestrictor))
             {
@@ -62,23 +58,24 @@ namespace SiteCopy
             if (!createdUri.isValidAbsoluteUri)
             {
                 throw new ArgumentException($"The value of {nameof(uri)} is not valid absolute uri.");
-            }     
+            }
 
-            await GetSiteCopyCoreLogic(createdUri.uri, savePath, depthCopy, allowedResources).ConfigureAwait(false);
+            dataStorage = storageFactory.GetDataStorage();
+
+            await GetSiteCopyCoreLogic(createdUri.uri, depthCopy, allowedResources).ConfigureAwait(false);
         }
 
-        private async Task GetSiteCopyCoreLogic(Uri uri, string savePath, int depth, string allowedResources)
-        {
-            //TODO Task.WhenAll
+        private async Task GetSiteCopyCoreLogic(Uri uri,  int depth, string allowedResources)
+        {          
             string html = await GetHtmlAsync(uri).ConfigureAwait(false);
 
             var htmlDocument = await htmlParser.GetHtmlDocumentAsync(html).ConfigureAwait(false);
 
             if (depth == 0)
             {
-                SaveHtml(html, htmlDocument.Title, savePath);
+                SaveHtml(html, htmlDocument.Title);
 
-                await SaveResources(htmlDocument, savePath, allowedResources).ConfigureAwait(false);
+                await SaveResources(htmlDocument, allowedResources).ConfigureAwait(false);
 
                 return;
             }
@@ -87,7 +84,7 @@ namespace SiteCopy
 
             foreach(var hrefLink in hrefLinks)
             {
-                await GetSiteCopyCoreLogic(hrefLink, savePath, depth - 1, allowedResources).ConfigureAwait(false);
+                await GetSiteCopyCoreLogic(hrefLink, depth - 1, allowedResources).ConfigureAwait(false);
             }
         }
 
@@ -110,61 +107,56 @@ namespace SiteCopy
             return htmlContent;            
         }
 
-        private void SaveHtml(string html, string htmTitle, string savePath)
+        private void SaveHtml(string html, string htmTitle)
         {
-            //TODO Move To FileStorage + Create Factory For Storage
-            Regex illegalSymbolsInFileName = new Regex(@"[\\/:*?""<>|]");
-
-            string fileName = illegalSymbolsInFileName.Replace(htmTitle, "");
-
-            File.WriteAllText($@"{savePath}\{fileName}.html", html);
+            dataStorage.SaveHtml(html, htmTitle);
         }
 
-        private async Task SaveResources(IHtmlDocument htmlDocument, string savePath, string allowedResources)
+        private async Task SaveResources(IHtmlDocument htmlDocument, string allowedResources)
         {
             IEnumerable<string> allowedRsc = allowedResources.Split(',').Select(s => s.Trim());
 
             var resourceLinks = htmlParser.GetSrcLinks(htmlDocument);
 
-            var resourceUries = resourceLinks.Select(link => CreateUri(link)).Where(uri => uri != null).Distinct();
+            var resourceUries = resourceLinks.Select(link => CreateUri(link)).Where(uri => uri != null);
 
             using (var client = new HttpClient())
             {
                 foreach (var srcUri in resourceUries)
                 {
-                    //TODO Move to separeta methpd Filter
-                    var srcSegmnets = srcUri.Segments;
-
-                    string srcName = srcSegmnets[srcSegmnets.Length - 1];
-
-                    int dotIndex = srcName.LastIndexOf('.');
-
-                    string srcFileExtention = srcName.Substring(dotIndex + 1, srcName.Length - dotIndex -1);
-
-                    bool isAllowedSrc = allowedRsc.FirstOrDefault(s => s == srcFileExtention) != null;
-
-                    if (isAllowedSrc)
+                    string srcName = "";
+         
+                    if (IsAllowedResource(srcUri, allowedRsc, out srcName))
                     {
                         var httpRespinse = await client.GetAsync(srcUri).ConfigureAwait(false);
 
-
                         if (httpRespinse.IsSuccessStatusCode)
                         {
-                            //TODO moe in FileStorage and +  try catch for client 
+                            //TODO try catch for client + Task.WhenAll
                             using (var dataStream = await httpRespinse.Content.ReadAsStreamAsync().ConfigureAwait(false))
                             {
-                                string saveSourcePath = $@"{savePath}\{srcName}";
-
-                                using (Stream streamToWriteTo = File.Open(saveSourcePath, FileMode.Create))
-                                {
-                                    await dataStream.CopyToAsync(streamToWriteTo);
-                                }
+                                await dataStorage.SaveResourcesAsync(dataStream, srcName).ConfigureAwait(false);
                             }
                         }
                     }
                 }
             }          
 
+        }
+
+        private bool IsAllowedResource(Uri srcUri, IEnumerable<string> allowedResources, out string srcName)
+        {
+            var srcSegmnets = srcUri.Segments;
+
+            srcName = srcSegmnets[srcSegmnets.Length - 1];
+
+            int dotIndex = srcName.LastIndexOf('.');
+
+            string srcFileExtention = srcName.Substring(dotIndex + 1, srcName.Length - dotIndex - 1);
+
+            bool isAllowedSrc = allowedResources.FirstOrDefault(s => s == srcFileExtention) != null;
+
+            return isAllowedSrc;
         }
 
         private (bool isValidAbsoluteUri, Uri uri) TryCreateAbsoluteUri(string uri)
