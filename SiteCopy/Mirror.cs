@@ -107,7 +107,7 @@ namespace SiteCopy
                 return;
             }
 
-            var hrefLinks = htmlParser.GetHrefLinks(htmlDocument).Select(l => CreateUri(uri, l)).Where(u => u != null);
+            var hrefLinks = htmlParser.GetHrefLinks(htmlDocument).Select(l => CreateUri(uri, l)).Where(u => u != null && linkRestrictor.IsAllowedLink(uri, u) == true);
 
             foreach(var hrefLink in hrefLinks)
             {
