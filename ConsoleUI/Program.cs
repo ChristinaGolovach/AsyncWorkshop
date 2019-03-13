@@ -14,10 +14,10 @@ namespace ConsoleUI
             string uri = "https://social.msdn.microsoft.com/Forums/en-US/e7279f10-fad4-4a9f-b7e2-c2e1d52c86aa/get-page-source-with-httpclient?forum=winappswithcsharp";
             string savePath = @"D:\EPAM\Laba\Days\Day10(Async)\Homework\TestHomwork";
 
-            //TODO move this in Inject
+            //TODO move this in Inject, but how pass argument to ctor if it will be known after user will enter the path
             IStorageFactory storageFactory = new FileStorageFactory(savePath);
 
-            var result = mirror.GetSiteCopy(uri, storageFactory, 0, PathLinkRestriction.NoLimit, "png, gif");
+            var result = mirror.GetSiteCopy(uri, storageFactory, 0, PathLinkRestriction.NoLimit, "png, gif, js");
             Task.WaitAll(result);
 
         }

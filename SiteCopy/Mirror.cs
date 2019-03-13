@@ -12,7 +12,9 @@ using SiteCopy.Services;
 
 namespace SiteCopy
 {
-    //TODO Comments
+    /// <summary>
+    /// Represents a simply class for for local copying of site pages and resources.
+    /// </summary>
     public class Mirror
     {
         private ILinkRestriction linkRestrictor;
@@ -20,12 +22,37 @@ namespace SiteCopy
 
         private HtmlParserUtil htmlParser;
 
+        /// <summary>
+        /// Initialize a new instance of class.
+        /// </summary>
         public Mirror()
         {
             //TODO DI
             htmlParser = new HtmlParserUtil();
         }
 
+        /// <summary>
+        /// Create copy of target site according to the specified parameters.
+        /// </summary>
+        /// <param name="uri">The target site uri.</param>
+        /// <param name="storageFactory">A <see cref="IStorageFactory"/>.<</param>
+        /// <param name="depthCopy">The link analysis depth. Default 0 - only current page.</param>
+        /// <param name="linkRestriction">The restriction on switching to other domains. Default - no limit.</param>
+        /// <param name="allowedResources">The restriction on the "expansion" of downloadable resources, e.g. what resources should be downloaded.
+        /// Examle: 'js, png'. Default - not download resources.</param>
+        /// <returns>A <see cref="Task"/>.</returns>
+        /// <exception cref="ArgumentException">
+        /// The <paramref name="linkRestriction"/> is not supported.
+        /// The <paramref name="uri"/> is not valid absolute uri.
+        /// </exception>        
+        /// <exception cref="ArgumentNullException">
+        /// The <paramref name="uri"/> is null.
+        /// The <paramref name="allowedResources"/> is null.
+        /// The <paramref name="storageFactory"/> is null.
+        /// </exception>
+        /// <exception cref="ArgumentOutOfRangeException">
+        /// The <paramref name="depthCopy"/> is less than zero.
+        /// </exception>
         public async Task GetSiteCopy(string uri, IStorageFactory storageFactory, int depthCopy = 0, PathLinkRestriction linkRestriction = PathLinkRestriction.NoLimit, string allowedResources="")
         {
             if (string.IsNullOrEmpty(uri))
@@ -65,7 +92,7 @@ namespace SiteCopy
             await GetSiteCopyCoreLogic(createdUri.uri, depthCopy, allowedResources).ConfigureAwait(false);
         }
 
-        private async Task GetSiteCopyCoreLogic(Uri uri,  int depth, string allowedResources)
+        private async Task GetSiteCopyCoreLogic(Uri uri, int depth, string allowedResources)
         {          
             string html = await GetHtmlAsync(uri).ConfigureAwait(false);
 
@@ -75,12 +102,12 @@ namespace SiteCopy
             {
                 SaveHtml(html, htmlDocument.Title);
 
-                await SaveResources(htmlDocument, allowedResources).ConfigureAwait(false);
+                await SaveResources(uri, htmlDocument, allowedResources).ConfigureAwait(false);
 
                 return;
             }
 
-            var hrefLinks = htmlParser.GetHrefLinks(htmlDocument).Select(l => CreateUri(l)).Where(u => u != null);
+            var hrefLinks = htmlParser.GetHrefLinks(htmlDocument).Select(l => CreateUri(uri, l)).Where(u => u != null);
 
             foreach(var hrefLink in hrefLinks)
             {
@@ -101,6 +128,8 @@ namespace SiteCopy
                 catch (Exception ex)
                 {
                     htmlContent = $"The {uri} is  not processed.";
+
+                    //TODO log ("the resourse {srcUri} is not processed.", ex
                 }
             }
 
@@ -112,13 +141,13 @@ namespace SiteCopy
             dataStorage.SaveHtml(html, htmTitle);
         }
 
-        private async Task SaveResources(IHtmlDocument htmlDocument, string allowedResources)
+        private async Task SaveResources(Uri baseUri,  IHtmlDocument htmlDocument, string allowedResources)
         {
             IEnumerable<string> allowedRsc = allowedResources.Split(',').Select(s => s.Trim());
 
             var resourceLinks = htmlParser.GetSrcLinks(htmlDocument);
 
-            var resourceUries = resourceLinks.Select(link => CreateUri(link)).Where(uri => uri != null);
+            var resourceUries = resourceLinks.Select(link => CreateUri(baseUri, link)).Where(uri => uri != null);
 
             using (var client = new HttpClient())
             {
@@ -128,20 +157,19 @@ namespace SiteCopy
          
                     if (IsAllowedResource(srcUri, allowedRsc, out srcName))
                     {
-                        var httpRespinse = await client.GetAsync(srcUri).ConfigureAwait(false);
-
-                        if (httpRespinse.IsSuccessStatusCode)
+                        try
                         {
-                            //TODO try catch for client + Task.WhenAll
-                            using (var dataStream = await httpRespinse.Content.ReadAsStreamAsync().ConfigureAwait(false))
-                            {
-                                await dataStorage.SaveResourcesAsync(dataStream, srcName).ConfigureAwait(false);
-                            }
+                            var httpResponseStream = await client.GetStreamAsync(srcUri).ConfigureAwait(false);
+
+                            await dataStorage.SaveResourcesAsync(httpResponseStream, srcName).ConfigureAwait(false);
+                        }
+                        catch(Exception ex)
+                        {
+                            //TODO log ("the resourse {srcUri} is not processed.", ex)
                         }
                     }
                 }
-            }          
-
+            }        
         }
 
         private bool IsAllowedResource(Uri srcUri, IEnumerable<string> allowedResources, out string srcName)
@@ -188,7 +216,7 @@ namespace SiteCopy
             return result;
         }
 
-        private Uri CreateUri(string uri)
+        private Uri CreateUri(Uri baseUri, string uri)
         {
             Uri newUri = null;
 
@@ -204,7 +232,7 @@ namespace SiteCopy
 
                 if (checkRelativeUri.isValidRelativeUri)
                 {
-                    newUri = checkRelativeUri.uri;
+                    Uri.TryCreate(baseUri, checkRelativeUri.uri, out newUri);
                 }
             }
 
